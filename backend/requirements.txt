@@ -1,3 +1,7 @@
 numpy
 scipy
 websocket-client
+python-dotenv
+fastapi
+uvicorn
+pydantic

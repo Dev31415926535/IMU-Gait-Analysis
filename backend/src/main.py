@@ -3,9 +3,12 @@ import time
 import os
 import json
 from ws_reader import IMUWebSocketReader
-from backend.kneeAngle import IMUJointAngle
+from imu_joint_angle import IMUJointAngle
 from processors import process_packet_accel_angle, compute_stream_metrics
+from dotenv import load_dotenv
 
+# Load environment variables from .env file
+load_dotenv()
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), '..', 'data', 'recordings')
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -101,7 +104,8 @@ def run(esp_ip, do_calibration=True):
 
 if __name__ == "__main__":
     # Replace with your ESP IP or accept CLI args
-    ESP_IP = "10.62.139.36"
+    ESP_IP = os.getenv("ESP_IP")
+    print(ESP_IP)
     run(ESP_IP, do_calibration=True)
 
 
