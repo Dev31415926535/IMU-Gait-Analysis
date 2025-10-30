@@ -97,7 +97,14 @@ def run(esp_ip, do_calibration=True):
             ok = calibration_phase(ws, joint_system, num_samples=80, timeout_s=25)
             if not ok:
                 print("Calibration incomplete; proceeding with accel-based angle fallback.")
-        input("Press Enter to start measurement (will run 30s)...")
+        if os.getenv("AUTO_START", "0") != "1":
+            try:
+                input("Press Enter to start measurement (will run 30s)...")
+            except Exception:
+                # if somehow running headless and input() raises, proceed
+                print("Proceeding without interactive confirmation.")
+        else:
+            print("AUTO_START=1 detected — starting measurement without prompt.")
         measurement_phase(ws, joint_system=joint_system, duration_s=30, sampling_rate_est=10.0)
     finally:
         ws.close()

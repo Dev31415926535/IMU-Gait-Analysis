@@ -14,10 +14,10 @@ class IMUWebSocketReader:
     def connect(self):
         try:
             self.ws = create_connection(self.url, timeout=self.timeout)
-            print(f"✅ Connected to {self.url}")
+            print(f"[OK] Connected to {self.url}")
             return True
         except Exception as e:
-            print(f"❌ WebSocket connect error: {e}")
+            print(f"[ERROR] WebSocket connect error: {e}")
             return False
 
     def read_packet(self):
@@ -27,12 +27,14 @@ class IMUWebSocketReader:
             raw = self.ws.recv()
             return json.loads(raw)
         except WebSocketConnectionClosedException:
-            print("❌ Connection closed by remote.")
+            print("[ERROR] Connection closed by remote.")
             self.ws = None
             return None
         except Exception as e:
             # sometimes ESP prints other messages; ignore non-json lines
-            print(f"⚠ read error: {e}")
+            # safer plain text print
+            print("WARNING: read error:", e)
+
             return None
 
     def close(self):
@@ -42,4 +44,4 @@ class IMUWebSocketReader:
             except Exception:
                 pass
             self.ws = None
-            print("🔌 WebSocket closed")
+            print("WebSocket closed")

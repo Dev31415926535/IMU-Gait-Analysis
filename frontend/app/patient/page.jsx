@@ -4,6 +4,8 @@ import { useRouter } from 'next/navigation'
 import { useAuth } from '@/app/components/AuthProvider'
 import Sidebar from '@/app/components/Sidebar'
 
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+
 // Dummy patient data (simulate a DB)
 const patients = [
   {
@@ -63,22 +65,47 @@ export default function PatientPage() {
 
   async function handleGenerateRecording() {
     if (!patient) return
-    try {
-      setAnalyzing(true)
-      const res = await fetch('/analyze', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ patientId: patient.id }),
-      })
-      const data = await res.json()
-      // Append the new recording
-      setRecordings((prev) => [...prev, data])
-    } catch (err) {
-      console.error('Failed to generate recording:', err)
-      alert('Error generating recording.')
-    } finally {
-      setAnalyzing(false)
+  //   try {
+  //     setAnalyzing(true)
+  //     const res = await fetch('/analyze', {
+  //       method: 'POST',
+  //       headers: { 'Content-Type': 'application/json' },
+  //       body: JSON.stringify({ patientId: patient.id }),
+  //     })
+  //     const data = await res.json()
+  //     // Append the new recording
+  //     if (data?.recording) {
+  //       setRecordings((prev) => [...prev, data.recording])
+  //     }
+  //   } catch (err) {
+  //     console.error('Failed to generate recording:', err)
+  //     alert('Error generating recording.')
+  //   } finally {
+  //     setAnalyzing(false)
+  //   }
+  // }
+  // inside handleGenerateRecording()
+  try {
+    setAnalyzing(true)
+    const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+    const res = await fetch(`${API_BASE}/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ patientId: patient.id }),
+    })
+    if (!res.ok) throw new Error(`Server error ${res.status}`)
+    const data = await res.json()
+    if (data?.recording) {
+      setRecordings((prev) => [...prev, data.recording])
+    } else {
+      alert('No recording returned from server.')
     }
+  } catch (err) {
+    console.error('Failed to generate recording:', err)
+    alert('Error generating recording. See console for details.')
+  } finally {
+    setAnalyzing(false)
+  }
   }
 
   if (loading) return <div className="p-6">Loading patient data...</div>
