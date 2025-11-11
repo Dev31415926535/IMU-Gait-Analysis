@@ -1,80 +1,145 @@
-
-
-
-
-from fastapi import FastAPI, HTTPException, Request
+# backend/server.py
+from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
-import json, os, subprocess, time, uuid, shutil, re
+from fastapi.responses import StreamingResponse, JSONResponse
+import os, json, uuid, shutil, re, asyncio, csv
+from datetime import datetime
 
-# Project root is one level up from this file (backend/)
-DATA_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'data'))
-PATIENT_FILE = os.path.join(DATA_DIR, 'patients.json')
-RECORDING_FILE = os.path.join(DATA_DIR, 'recordings.json')
-RECORDING_DIR = os.path.join(DATA_DIR, 'recordings')
+# ---------- Paths ----------
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DATA_DIR = os.path.join(ROOT_DIR, "data")
+RECORDING_DIR = os.path.join(DATA_DIR, "recordings")
+PATIENT_FILE = os.path.join(DATA_DIR, "patients.json")
+RECORDING_FILE = os.path.join(DATA_DIR, "recordings.json")
 
 os.makedirs(RECORDING_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
 
+# ---------- App ----------
 app = FastAPI()
 
+# ---------- CORS ----------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
+# ---------- Helpers ----------
 def load_json(path):
+    """Load JSON from file safely."""
     if not os.path.exists(path):
         return []
-    with open(path, 'r') as f:
+    with open(path, "r") as f:
         try:
             return json.load(f)
         except Exception:
             return []
 
 def save_json(path, data):
-    with open(path, 'w') as f:
+    """Save JSON with indentation."""
+    with open(path, "w") as f:
         json.dump(data, f, indent=2)
 
 def slugify(name: str):
-    # simple slugify - lower, replace spaces with _, remove non-alnum/_/-
+    """Convert a string into a safe filename."""
     s = name.lower().strip()
-    s = re.sub(r'\s+', '_', s)
-    s = re.sub(r'[^a-z0-9_\-]', '', s)
-    return s[:60]  # keep reasonably short
+    s = re.sub(r"\s+", "_", s)
+    s = re.sub(r"[^a-z0-9_\-]", "", s)
+    return s[:60]
 
 def find_latest_raw_and_csv():
-    # find latest raw_*.jsonl in RECORDING_DIR by mtime
-    raw_files = [f for f in os.listdir(RECORDING_DIR) if f.startswith("raw_") and f.endswith(".jsonl")]
-    raw_files = sorted(raw_files, key=lambda fn: os.path.getmtime(os.path.join(RECORDING_DIR, fn))) if raw_files else []
-    latest_raw = raw_files[-1] if raw_files else None
+    """Find latest raw JSONL and CSV files."""
+    try:
+        raw_files = [f for f in os.listdir(RECORDING_DIR) if f.startswith("raw_") and f.endswith(".jsonl")]
+        csv_files = [f for f in os.listdir(RECORDING_DIR) if f.endswith(".csv")]
 
-    # CSV may be written as 'joint_angles.csv' or a time-based name; pick newest .csv
-    csv_files = [f for f in os.listdir(RECORDING_DIR) if f.endswith(".csv")]
-    csv_files = sorted(csv_files, key=lambda fn: os.path.getmtime(os.path.join(RECORDING_DIR, fn))) if csv_files else []
-    latest_csv = csv_files[-1] if csv_files else None
+        raw_files.sort(key=lambda fn: os.path.getmtime(os.path.join(RECORDING_DIR, fn)))
+        csv_files.sort(key=lambda fn: os.path.getmtime(os.path.join(RECORDING_DIR, fn)))
 
-    return latest_raw, latest_csv
+        latest_raw = raw_files[-1] if raw_files else None
+        latest_csv = csv_files[-1] if csv_files else None
 
-# ---------- PATIENT ROUTES ----------
+        return latest_raw, latest_csv
+    except FileNotFoundError:
+        return None, None
+
+# ---------- Recordings ----------
+@app.get("/recordings")
+def get_recordings(patient_id: str = Query(...), patient_name: str = Query(None)):
+    """Return recordings filtered by patient name/id."""
+    if not os.path.exists(RECORDING_DIR):
+        raise HTTPException(status_code=404, detail="Recording directory not found")
+
+    prefix = (patient_name or patient_id).lower().replace(" ", "_")
+    recordings = []
+
+    for fname in os.listdir(RECORDING_DIR):
+        if fname.lower().startswith(prefix) and fname.endswith("_angles.csv"):
+            label = fname.replace("_angles.csv", "").replace("_", " ").title()
+            recordings.append({
+                "id": fname.replace(".csv", ""),
+                "label": label,
+                "file": fname
+            })
+
+    if not recordings:
+        raise HTTPException(status_code=404, detail=f"No recordings found for {prefix}")
+
+    return recordings
+
+@app.get("/recordings/{rid}")
+def get_recording(rid: str):
+    """Return angle-time data for given recording."""
+    csv_path = os.path.join(RECORDING_DIR, f"{rid}.csv")
+    if not os.path.exists(csv_path):
+        raise HTTPException(status_code=404, detail=f"No CSV file found for recording {rid}")
+
+    data = []
+    with open(csv_path, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            try:
+                data.append({
+                    "time": float(row["time_s"]),
+                    "angle": float(row["angle_deg"]) if row["angle_deg"] else None,
+                })
+            except Exception:
+                continue
+
+    return JSONResponse({
+        "id": rid,
+        "label": os.path.basename(csv_path).replace("_", " ").replace(".csv", "").title(),
+        "file": os.path.basename(csv_path),
+        "data": data
+    })
+
+# ---------- Patients ----------
 @app.get("/patients")
 def get_patients():
+    """List all patients."""
     return load_json(PATIENT_FILE)
 
 @app.get("/patients/{pid}")
 def get_patient(pid: str):
+    """Get one patient + their recordings."""
     patients = load_json(PATIENT_FILE)
-    patient = next((p for p in patients if p["id"] == pid), None)
+    patient = next((p for p in patients if p.get("id") == pid), None)
     if not patient:
         raise HTTPException(status_code=404, detail="Patient not found")
 
-    recs = [r for r in load_json(RECORDING_FILE) if r["patient_id"] == pid]
-    patient["recordings"] = recs
+    patient["recordings"] = [r for r in load_json(RECORDING_FILE) if r.get("patient_id") == pid]
     return patient
 
 @app.post("/patients")
 def create_patient(payload: dict):
+    """Add new patient."""
     patients = load_json(PATIENT_FILE)
     new_patient = {"id": str(uuid.uuid4()), **payload}
     patients.append(new_patient)
@@ -83,9 +148,10 @@ def create_patient(payload: dict):
 
 @app.put("/patients/{pid}")
 def update_patient(pid: str, payload: dict):
+    """Update patient details."""
     patients = load_json(PATIENT_FILE)
     for p in patients:
-        if p["id"] == pid:
+        if p.get("id") == pid:
             p.update(payload)
             save_json(PATIENT_FILE, patients)
             return p
@@ -93,145 +159,73 @@ def update_patient(pid: str, payload: dict):
 
 @app.delete("/patients/{pid}")
 def delete_patient(pid: str):
-    patients = [p for p in load_json(PATIENT_FILE) if p["id"] != pid]
+    """Delete a patient."""
+    patients = [p for p in load_json(PATIENT_FILE) if p.get("id") != pid]
     save_json(PATIENT_FILE, patients)
     return {"ok": True}
 
-# ---------- RECORDINGS ----------
-@app.get("/recordings/{rid}")
-def get_recording(rid: str):
-    recs = load_json(RECORDING_FILE)
-    rec = next((r for r in recs if r["id"] == rid), None)
-    if not rec:
-        raise HTTPException(status_code=404, detail="Recording not found")
-    return rec
-
+# ---------- Analyze (Streaming) ----------
 @app.post("/analyze")
 async def analyze_patient(request: Request):
-    body = await request.json()
-    pid = body.get("patientId") or body.get("patient_id")
-    custom_label = body.get("label")
-    mock = bool(body.get("mock", False))
-    if not pid:
-        raise HTTPException(status_code=400, detail="Missing patientId in request body")
+    """Run main.py and stream output live, then save CSV & metadata."""
+    data = await request.json()
+    patient_id = data.get("patient_id")
+    patient_name = data.get("name", "unknown")
 
-    patients = load_json(PATIENT_FILE)
-    patient = next((p for p in patients if p["id"] == pid), None)
-    if not patient:
-        raise HTTPException(status_code=404, detail="Patient not found")
+    if not patient_id:
+        raise HTTPException(status_code=400, detail="Missing patient_id")
 
-    patient_name = patient.get("name", "patient")
-    slug = slugify(patient_name)
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-    print(f"Starting analysis for patient {pid} (name={patient_name}) in {project_root} ...")
+    print(f"=== Starting analysis for patient {patient_id} ({patient_name}) ===")
 
-    # MOCK mode: create fake files so you can test frontend without ESP32
-    if mock:
-        ts = int(time.time())
-        date_str = time.strftime("%Y-%m-%d")
-        raw_name = f"{slug}_{date_str}_{ts}_raw.jsonl"
-        angles_name = f"{slug}_{date_str}_{ts}_angles.csv"
-        # create small fake files
-        with open(os.path.join(RECORDING_DIR, raw_name), "w") as f:
-            f.write(json.dumps({"fake": True, "ts": ts}) + "\n")
-        with open(os.path.join(RECORDING_DIR, angles_name), "w") as f:
-            f.write("time_s,angle_deg\n0.0,10\n0.1,11\n")
-        rec_id = f"r{ts}_{uuid.uuid4().hex[:6]}"
-        rec = {
-            "id": rec_id,
-            "patient_id": pid,
-            "date": date_str,
-            "timestamp": ts,
-            "label": custom_label or f"{patient_name} {date_str}",
-            "raw_file": raw_name,
-            "angles_file": angles_name,
-            "metrics": {"mock": True}
-        }
-        recs = load_json(RECORDING_FILE); recs.append(rec); save_json(RECORDING_FILE, recs)
-        return {"status": "completed", "recording": rec}
+    async def stream_mainpy():
+        env = os.environ.copy()
+        env.setdefault("AUTO_START", "1")
 
-    # Real run: set AUTO_START so main.py won't wait for input
-    env = os.environ.copy()
-    env["AUTO_START"] = "1"
-    # optionally pass patient info or duration via env if main.py supports it
-    # env["PATIENT_ID"] = pid
-
-    try:
-        result = subprocess.run(
-            ["python", "src/main.py"],
-            cwd=project_root,
-            capture_output=True,
-            text=True,
+        process = await asyncio.create_subprocess_exec(
+            "python", "src/main.py",
+            cwd=ROOT_DIR,
             env=env,
-            timeout=180  # give it more time in case initial processing takes a bit
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
         )
-        if result.returncode != 0:
-            # include stdout/stderr in error for debugging (dev only)
-            detail = {
-                "msg": "main.py failed",
-                "returncode": result.returncode,
-                "stdout": result.stdout[-2000:],   # limit size
-                "stderr": result.stderr[-2000:]
-            }
-            print("main.py failure detail:", detail)
-            raise Exception(json.dumps(detail))
-    except subprocess.TimeoutExpired as e:
-        print("main.py timeout:", str(e))
-        raise HTTPException(status_code=500, detail="Analysis timeout")
-    except Exception as e:
-        # if we got an exception constructing the error, return some info for dev debugging
-        err = str(e)
-        print("Analysis exception:", err)
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {err}")
 
-    # find output files (same logic as before)
-    latest_raw, latest_csv = find_latest_raw_and_csv()
-    if latest_raw is None and latest_csv is None:
-        raise HTTPException(status_code=500, detail="No output files produced by analysis")
+        async for line in process.stdout:
+            yield line.decode("utf-8")
 
-    ts = int(time.time()); date_str = time.strftime("%Y-%m-%d"); safe_ts = str(ts)
-    new_raw_name = None; new_csv_name = None
+        await process.wait()
 
-    if latest_raw:
-        src_raw = os.path.join(RECORDING_DIR, latest_raw)
-        new_raw_name = f"{slug}_{date_str}_{safe_ts}_raw.jsonl"
-        shutil.copy(src_raw, os.path.join(RECORDING_DIR, new_raw_name))
+        # ---------- POST-PROCESS ----------
+        latest_raw, latest_csv = find_latest_raw_and_csv()
+        if not latest_csv:
+            yield "\n⚠️ No CSV file found after analysis.\n"
+            return
 
-    if latest_csv:
+        os.makedirs(RECORDING_DIR, exist_ok=True)
+
+        slug = slugify(patient_name)
+        timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+        new_filename = f"{slug}_{timestamp}_{abs(hash(timestamp)) % 10**9}_angles.csv"
+
         src_csv = os.path.join(RECORDING_DIR, latest_csv)
-        new_csv_name = f"{slug}_{date_str}_{safe_ts}_angles.csv"
-        try:
-            shutil.copy(src_csv, os.path.join(RECORDING_DIR, new_csv_name))
-        except Exception as e:
-            print("Failed to copy csv:", e)
-            new_csv_name = None
+        dest_csv = os.path.join(RECORDING_DIR, new_filename)
+        shutil.copy(src_csv, dest_csv)
 
-    rec_id = f"r{int(time.time())}_{uuid.uuid4().hex[:6]}"
-    rec_label = custom_label or f"{patient_name} {date_str}"
-    new_rec = {
-        "id": rec_id,
-        "patient_id": pid,
-        "date": date_str,
-        "timestamp": ts,
-        "label": rec_label,
-        "raw_file": new_raw_name,
-        "angles_file": new_csv_name,
-        "metrics": {}
-    }
+        yield f"\n📁 Saved new recording for {patient_name}: {new_filename}\n"
 
-    # attempt parse JSON metrics from stdout (if main.py prints metrics JSON)
-    try:
-        out_lines = [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
-        if out_lines:
-            last = out_lines[-1]
-            parsed = json.loads(last)
-            if isinstance(parsed, dict):
-                new_rec["metrics"] = parsed
-    except Exception:
-        pass
+        # ---------- Save metadata ----------
+        recordings_path = os.path.join(DATA_DIR, "recordings.json")
+        recordings = load_json(recordings_path)
+        rec_entry = {
+            "patient_id": patient_id,
+            "name": patient_name,
+            "timestamp": timestamp,
+            "csv": new_filename,
+            "raw": latest_raw,
+        }
+        recordings.append(rec_entry)
+        save_json(recordings_path, recordings)
 
-    recs = load_json(RECORDING_FILE)
-    recs.append(new_rec)
-    save_json(RECORDING_FILE, recs)
+        yield "\n✅ Metadata updated and recording saved.\n"
+        yield "🎉 Analysis complete!\n"
 
-    return {"status": "completed", "recording": new_rec}
+    return StreamingResponse(stream_mainpy(), media_type="text/plain")
