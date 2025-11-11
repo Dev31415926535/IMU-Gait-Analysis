@@ -1,174 +1,14 @@
-# src/processors.py
-import numpy as np
-from scipy.signal import find_peaks
-
-def gyro_norm(gyro):
-    g = np.array([gyro['Gx'], gyro['Gy'], gyro['Gz']], dtype=float)
-    return np.linalg.norm(g)
-
-def process_packet_accel_angle(packet):
-    """
-    Fallback simple accel-vector knee angle:
-    Angle between IMU1 accel vector and IMU2 accel vector (degrees).
-    Use when calibration not done or axes/positions unknown.
-    """
-    a1 = np.array([packet['IMU1']['Ax'], packet['IMU1']['Ay'], packet['IMU1']['Az']], dtype=float)
-    a2 = np.array([packet['IMU2']['Ax'], packet['IMU2']['Ay'], packet['IMU2']['Az']], dtype=float)
-    n1 = np.linalg.norm(a1)
-    n2 = np.linalg.norm(a2)
-    if n1 < 1e-9 or n2 < 1e-9:
-        return None
-    dot = np.dot(a1, a2) / (n1 * n2)
-    dot = float(max(-1.0, min(1.0, dot)))
-    angle_rad = np.arccos(dot)
-    return float(np.degrees(angle_rad))
-
-def compute_stream_metrics(packets, sampling_rate=10.0, step_height_factor=0.6, min_step_s=0.25):
-    """
-    packets: list of dicts (each packet JSON from ESP)
-    returns dict with times, angles, gyro_norms, step_times, cadence, etc.
-    """
-    N = len(packets)
-    times = np.arange(N) / sampling_rate
-    angles = []
-    gnorms = []
-    for p in packets:
-        angle = process_packet_accel_angle(p)
-        gnorm = gyro_norm(p['IMU2'])
-        angles.append(angle)
-        gnorms.append(gnorm)
-    gnorms = np.array(gnorms)
-    # step detection: peaks above mean + k*std, min distance
-    if N == 0:
-        return {}
-    th = np.mean(gnorms) + step_height_factor * np.std(gnorms)
-    min_dist_samples = max(1, int(min_step_s * sampling_rate))
-    peaks, props = find_peaks(gnorms, height=th, distance=min_dist_samples)
-    step_times = (peaks / sampling_rate).tolist()
-
-    results = {
-        'times': times.tolist(),
-        'angles': angles,
-        'gyro_norms': gnorms.tolist(),
-        'step_times': step_times,
-        'detected_steps': int(len(peaks)),
-    }
-    if len(step_times) >= 2:
-        intervals = np.diff(step_times)
-        mean_step_time = float(np.mean(intervals))
-        results['mean_step_time_s'] = mean_step_time
-        results['cadence_spm'] = 60.0 / mean_step_time if mean_step_time > 0 else None
-    else:
-        results['mean_step_time_s'] = None
-        results['cadence_spm'] = None
-
-    results['mean_knee_angle_deg'] = float(np.nanmean([a for a in angles if a is not None]))
-    results['std_knee_angle_deg'] = float(np.nanstd([a for a in angles if a is not None]))
-    results['peak_knee_angle_deg'] = float(np.nanmax([a for a in angles if a is not None]))
-    return results
-
-
 
 # # src/processors.py
 # import numpy as np
 # from scipy.signal import find_peaks
-# from event_detector import detect_events_shank
-# from spatial import stride_length_inverted_pendulum, stride_length_from_step_lengths, speed_from_stride
-# from metrics import gait_summary
-
-
-# # inside file, add:
-# def compute_advanced_metrics(packets, sampling_rate=50.0, leg_length_m=0.95):
-#     """
-#     Higher-level metrics using shank packets (IMU2) and computed angles.
-#     packets: original packets list from ESP (each packet has IMU1 and IMU2)
-#     sampling_rate: fs used to convert indices -> time
-#     leg_length_m: effective leg length (m) for inverted-pendulum
-#     Returns dict with events, stride/step lengths and summary.
-#     """
-#     # extract shank packets list (IMU2) and angle series
-#     shank_packets = [p['IMU2'] for p in packets]
-#     # angles as fallback accel-angle
-#     angles = [process_packet_accel_angle(p) for p in packets]
-
-#     peaks, to_idx, hs_idx, proc_gyro = detect_events_shank(shank_packets, fs=sampling_rate)
-#     # convert indices to timestamps
-#     step_times = [i / sampling_rate for i in peaks]  # mid-swing times (approx)
-#     hs_times = [i / sampling_rate for i in hs_idx]
-#     to_times = [i / sampling_rate for i in to_idx]
-
-#     # derive stride times assuming hs_times are same-foot HS (if alternating, user can adjust)
-#     # Heuristic: if diffs of hs_times ~0.5 => alternating; if ~1.0 => same-foot
-#     # For now assume hs_times are alternating -> compute stride_time from hs_times[::2]
-#     # Simpler: compute step_times diffs and cadence
-#     results = {}
-#     results['peaks_idx'] = peaks
-#     results['hs_idx'] = hs_idx
-#     results['to_idx'] = to_idx
-#     results['hs_times'] = hs_times
-#     results['to_times'] = to_times
-#     results['processed_gyro'] = proc_gyro.tolist()
-#     # compute stride/step timing
-#     if len(hs_times) >= 3:
-#         step_intervals = np.diff(hs_times)
-#         results['mean_step_time_s'] = float(np.mean(step_intervals))
-#         results['cadence_spm'] = 60.0 / results['mean_step_time_s'] if results['mean_step_time_s']>0 else None
-#     else:
-#         results['mean_step_time_s'] = None
-#         results['cadence_spm'] = None
-
-#     # compute pitch at HS using a simple accel-based pitch from IMU2 as fallback:
-#     # pitch = asin(Ay / |A|) (this is approximate; recommend orientation fusion)
-#     acc_mag = np.array([[p['Ax'],p['Ay'],p['Az']] for p in shank_packets], dtype=float)
-#     acc_norm = np.linalg.norm(acc_mag, axis=1)
-#     # avoid divide by zero
-#     acc_norm[acc_norm==0] = 1.0
-#     pitch_est = np.arcsin(np.clip(acc_mag[:,1] / acc_norm, -1.0, 1.0))  # approximate pitch (rad)
-#     # map pitch at hs_indices
-#     pitch_at_hs = pitch_est[hs_idx] if len(hs_idx)>0 and len(pitch_est)>max(hs_idx) else pitch_est[::max(1,int(len(pitch_est)/max(1,len(hs_idx))))]
-#     # compute stride lengths using inverted pendulum on HS of same foot (assumes hs_idx refers to same foot sequence)
-#     stride_lengths = stride_length_inverted_pendulum(pitch_at_hs, leg_length_m)
-#     results['stride_lengths_m'] = stride_lengths.tolist()
-#     # approximate stride_times using alternate HS (two-step) if available
-#     if len(hs_times) >= 3:
-#         stride_times = np.array(hs_times[2:]) - np.array(hs_times[:-2])
-#         results['stride_times_s'] = stride_times.tolist()
-#     else:
-#         results['stride_times_s'] = []
-
-#     if len(results.get('stride_lengths_m', [])) and len(results.get('stride_times_s', [])):
-#         speeds = speed_from_stride(results['stride_lengths_m'], results['stride_times_s'])
-#         results['speeds_mps'] = speeds.tolist()
-#     else:
-#         results['speeds_mps'] = []
-
-#     # knee peaks per stride (using angles)
-#     knee_peaks = []
-#     for i in range(len(hs_idx)-1):
-#         s = hs_idx[i]
-#         e = hs_idx[i+1]
-#         if e > s and e <= len(angles):
-#             seg = [a for a in angles[s:e+1] if a is not None]
-#             if seg:
-#                 knee_peaks.append(float(np.nanmax(seg)))
-#     results['knee_peak_deg'] = knee_peaks
-
-#     # gait summary
-#     summary = gait_summary(results.get('stride_times_s', []), results.get('stride_lengths_m', []), knee_peaks)
-#     results['summary'] = summary
-#     return results
-
+# from scipy.signal import medfilt
 
 # def gyro_norm(gyro):
 #     g = np.array([gyro['Gx'], gyro['Gy'], gyro['Gz']], dtype=float)
 #     return np.linalg.norm(g)
 
 # def process_packet_accel_angle(packet):
-#     """
-#     Fallback simple accel-vector knee angle:
-#     Angle between IMU1 accel vector and IMU2 accel vector (degrees).
-#     Use when calibration not done or axes/positions unknown.
-#     """
 #     a1 = np.array([packet['IMU1']['Ax'], packet['IMU1']['Ay'], packet['IMU1']['Az']], dtype=float)
 #     a2 = np.array([packet['IMU2']['Ax'], packet['IMU2']['Ay'], packet['IMU2']['Az']], dtype=float)
 #     n1 = np.linalg.norm(a1)
@@ -180,36 +20,50 @@ def compute_stream_metrics(packets, sampling_rate=10.0, step_height_factor=0.6, 
 #     angle_rad = np.arccos(dot)
 #     return float(np.degrees(angle_rad))
 
+# def _mad(x):
+#     med = np.median(x)
+#     return np.median(np.abs(x - med))
+
 # def compute_stream_metrics(packets, sampling_rate=10.0, step_height_factor=0.6, min_step_s=0.25):
-#     """
-#     packets: list of dicts (each packet JSON from ESP)
-#     returns dict with times, angles, gyro_norms, step_times, cadence, etc.
-#     """
 #     N = len(packets)
 #     times = np.arange(N) / sampling_rate
 #     angles = []
 #     gnorms = []
 #     for p in packets:
-#         angle = process_packet_accel_angle(p)
-#         gnorm = gyro_norm(p['IMU2'])
-#         angles.append(angle)
-#         gnorms.append(gnorm)
+#         angles.append(process_packet_accel_angle(p))
+#         gnorms.append(gyro_norm(p['IMU2']))
 #     gnorms = np.array(gnorms)
-#     # step detection: peaks above mean + k*std, min distance
+
 #     if N == 0:
 #         return {}
-#     th = np.mean(gnorms) + step_height_factor * np.std(gnorms)
+
+#     # smooth gyro norms with small median filter to suppress spikes
+#     k = 5
+#     if N >= k:
+#         # medfilt requires odd kernel
+#         kernel = k if k % 2 == 1 else k+1
+#         gnorms_s = medfilt(gnorms, kernel_size=kernel)
+#     else:
+#         gnorms_s = gnorms.copy()
+
+#     # robust threshold: median + factor * MAD
+#     med = float(np.median(gnorms_s))
+#     mad = float(_mad(gnorms_s)) + 1e-12
+#     th = med + step_height_factor * (mad * 1.4826)  # approx std from MAD
+
 #     min_dist_samples = max(1, int(min_step_s * sampling_rate))
-#     peaks, props = find_peaks(gnorms, height=th, distance=min_dist_samples)
+#     peaks, props = find_peaks(gnorms_s, height=th, distance=min_dist_samples)
 #     step_times = (peaks / sampling_rate).tolist()
 
 #     results = {
 #         'times': times.tolist(),
 #         'angles': angles,
 #         'gyro_norms': gnorms.tolist(),
+#         'gyro_norms_smooth': gnorms_s.tolist(),
 #         'step_times': step_times,
 #         'detected_steps': int(len(peaks)),
 #     }
+
 #     if len(step_times) >= 2:
 #         intervals = np.diff(step_times)
 #         mean_step_time = float(np.mean(intervals))
@@ -219,7 +73,227 @@ def compute_stream_metrics(packets, sampling_rate=10.0, step_height_factor=0.6, 
 #         results['mean_step_time_s'] = None
 #         results['cadence_spm'] = None
 
-#     results['mean_knee_angle_deg'] = float(np.nanmean([a for a in angles if a is not None]))
-#     results['std_knee_angle_deg'] = float(np.nanstd([a for a in angles if a is not None]))
-#     results['peak_knee_angle_deg'] = float(np.nanmax([a for a in angles if a is not None]))
+#     valid_angles = [a for a in angles if a is not None]
+#     results['mean_knee_angle_deg'] = float(np.nanmean(valid_angles)) if len(valid_angles) > 0 else None
+#     results['std_knee_angle_deg'] = float(np.nanstd(valid_angles)) if len(valid_angles) > 0 else None
+#     results['peak_knee_angle_deg'] = float(np.nanmax(valid_angles)) if len(valid_angles) > 0 else None
 #     return results
+
+
+
+
+
+
+"""
+processors.py
+
+Provides:
+ - process_packet_accel_angle(packet): compute accel-based knee angle (deg) and gyro norm
+ - compute_stream_metrics(packets, sampling_rate=..., ...): improved step detection & cadence
+
+Designed to be a drop-in replacement for the project's processors module.
+"""
+
+from typing import Dict, Any, Tuple, List
+import numpy as np
+from scipy.signal import find_peaks, medfilt, butter, filtfilt
+
+__all__ = ["process_packet_accel_angle", "compute_stream_metrics"]
+
+
+def _mad(x: np.ndarray) -> float:
+    """Return median absolute deviation (robust)."""
+    med = np.median(x)
+    return float(np.median(np.abs(x - med)))
+
+
+def process_packet_accel_angle(packet: Dict[str, Any]) -> Tuple[float, float]:
+    """
+    Compute a simple accelerometer-based knee-angle surrogate (degrees) and gyro norm
+    from a single packet.
+
+    packet: expected to contain:
+      packet['IMU1']['Ax/Ay/Az'] and packet['IMU2']['Ax/Ay/Az']
+      packet['IMU2']['Gx/Gy/Gz'] (gyro used to compute norm)
+
+    Returns:
+      (angle_deg, gyro_norm)
+      angle_deg is float (NaN if not computable)
+      gyro_norm is float (0.0 if not available)
+    """
+    angle = float("nan")
+    gnorm = 0.0
+    try:
+        a1 = np.array([packet["IMU1"]["Ax"], packet["IMU1"]["Ay"], packet["IMU1"]["Az"]], dtype=float)
+        a2 = np.array([packet["IMU2"]["Ax"], packet["IMU2"]["Ay"], packet["IMU2"]["Az"]], dtype=float)
+        n1 = np.linalg.norm(a1)
+        n2 = np.linalg.norm(a2)
+        if n1 > 1e-9 and n2 > 1e-9:
+            dot = np.dot(a1, a2) / (n1 * n2)
+            dot = float(max(-1.0, min(1.0, dot)))
+            angle = float(np.degrees(np.arccos(dot)))
+        else:
+            angle = float("nan")
+    except Exception:
+        angle = float("nan")
+
+    try:
+        g = np.array([packet["IMU2"]["Gx"], packet["IMU2"]["Gy"], packet["IMU2"]["Gz"]], dtype=float)
+        gnorm = float(np.linalg.norm(g))
+    except Exception:
+        gnorm = 0.0
+
+    return angle, gnorm
+
+
+def compute_stream_metrics(
+    packets: List[Dict[str, Any]],
+    sampling_rate: float = 50.0,
+    # step detection tuning
+    step_height_factor: float = 0.6,
+    min_step_s: float = 0.25,
+    bandpass_low_hz: float = 0.5,
+    bandpass_high_hz: float = 3.0,
+    min_angle_excursion_deg: float = 8.0,
+    combine_gyro_weight: float = 0.25,
+    peak_prominence_deg: float = 6.0,
+) -> Dict[str, Any]:
+    """
+    Improved step detection:
+      - compute knee-angle surrogate using accelerometer vectors from IMU1 & IMU2
+      - smooth angle series with median filter
+      - compute angular velocity (deg/s)
+      - bandpass-filter angular velocity to physiological step band (default 0.5-3 Hz)
+      - form activity signal = |bandpassed_ang_vel| optionally combined with smoothed gyro norm
+      - dynamic thresholding using median + factor*MAD
+      - peak detection using height, distance, and prominence
+      - validate peaks by checking angle excursion around peak (prevents stillness false positives)
+      - compute cadence (steps per minute) from validated peaks
+    """
+    N = len(packets)
+    if N == 0:
+        return {}
+
+    # times array
+    times = np.arange(N, dtype=float) / sampling_rate
+
+    # extract angle (accelerometer-based surrogate) and gyro norms using helper
+    angles = []
+    gnorms = []
+    for p in packets:
+        ang, g = process_packet_accel_angle(p)
+        angles.append(ang)
+        gnorms.append(g)
+
+    angles_arr = np.array(angles, dtype=float)
+    gnorms = np.array(gnorms, dtype=float)
+
+    # 1) Smooth angle series (median filter) to suppress spikes
+    k = 5
+    if N >= k:
+        kernel = k if k % 2 == 1 else k + 1
+        med_angle = float(np.nanmedian(angles_arr)) if np.isfinite(np.nanmedian(angles_arr)) else 0.0
+        angles_filled = np.where(np.isfinite(angles_arr), angles_arr, med_angle)
+        angles_s = medfilt(angles_filled, kernel_size=kernel)
+    else:
+        med_angle = float(np.nanmedian(angles_arr)) if np.isfinite(np.nanmedian(angles_arr)) else 0.0
+        angles_s = np.where(np.isfinite(angles_arr), angles_arr, med_angle)
+
+    # 2) Compute angular velocity (deg/s) via numeric gradient
+    ang_vel = np.gradient(angles_s, 1.0 / sampling_rate)
+
+    # 3) Bandpass filter angular velocity in step band
+    nyq = 0.5 * sampling_rate
+    low = max(0.0, bandpass_low_hz / nyq)
+    high = min(0.999, bandpass_high_hz / nyq)
+    if low >= high:
+        ang_vel_bp = ang_vel.copy()
+    else:
+        try:
+            b, a = butter(N=3, Wn=[low, high], btype="band")
+            ang_vel_bp = filtfilt(b, a, ang_vel)
+        except Exception:
+            ang_vel_bp = ang_vel.copy()
+
+    # 4) Build activity signal: absolute of bandpassed ang vel, optionally combined with smooth gyro-norm
+    act = np.abs(ang_vel_bp)
+
+    # smooth gyro-norm a bit
+    gnorms_s = gnorms.copy()
+    if N >= 5:
+        kernel = 5 if 5 % 2 == 1 else 5 + 1
+        gnorms_s = medfilt(gnorms_s, kernel_size=kernel)
+
+    def _norm0to1(x: np.ndarray) -> np.ndarray:
+        if x.size == 0:
+            return x
+        mn = float(np.nanmin(x))
+        mx = float(np.nanmax(x))
+        if mx - mn < 1e-9:
+            return np.zeros_like(x)
+        return (x - mn) / (mx - mn)
+
+    act_n = _norm0to1(act)
+    g_n = _norm0to1(gnorms_s)
+    activity_signal = (1.0 - combine_gyro_weight) * act_n + combine_gyro_weight * g_n
+    # scale activity_signal to reflect magnitude of act (so thresholding in deg/s makes sense)
+    scale = float(np.nanmax(act)) if np.nanmax(act) > 0 else 1.0
+    activity_signal = activity_signal * scale
+
+    # 5) Dynamic threshold (median + factor * MAD)
+    med_act = float(np.median(activity_signal))
+    mad_act = _mad(activity_signal) + 1e-12
+    threshold = med_act + step_height_factor * (mad_act * 1.4826)  # scaled MAD ~ std
+
+    # 6) Peak detection
+    min_dist_samples = max(1, int(min_step_s * sampling_rate))
+    peaks, props = find_peaks(
+        activity_signal,
+        height=threshold,
+        distance=min_dist_samples,
+        prominence=peak_prominence_deg,
+    )
+
+    # 7) Validate peaks by checking angle excursion in a window around peak
+    validated_peaks = []
+    half_window_samples = max(1, int(0.4 * sampling_rate))  # check ~0.4s around peak (tunable)
+    for p in peaks:
+        lo = max(0, p - half_window_samples)
+        hi = min(N - 1, p + half_window_samples)
+        seg = angles_s[lo:hi + 1]
+        if seg.size == 0:
+            continue
+        excursion = float(np.nanmax(seg) - np.nanmin(seg))
+        if excursion >= min_angle_excursion_deg:
+            validated_peaks.append(int(p))
+
+    # 8) Convert to times and compute cadence
+    step_times = (np.array(validated_peaks, dtype=float) / sampling_rate).tolist()
+    detected_steps = int(len(validated_peaks))
+
+    mean_step_time = None
+    cadence_spm = None
+    if len(validated_peaks) >= 2:
+        intervals = np.diff(np.array(validated_peaks, dtype=float)) / sampling_rate
+        # remove unreasonable intervals
+        intervals = intervals[(intervals > 0) & (intervals < 5.0)]
+        if intervals.size > 0:
+            mean_step_time = float(np.mean(intervals))
+            cadence_spm = 60.0 / mean_step_time if mean_step_time > 0 else None
+
+    valid_angles = angles_arr[np.isfinite(angles_arr)]
+    results = {
+        "times": times.tolist(),
+        "angles": [None if not np.isfinite(a) else float(a) for a in angles_arr.tolist()],
+        "gyro_norms": gnorms.tolist(),
+        "gyro_norms_smooth": gnorms_s.tolist(),
+        "activity_signal": activity_signal.tolist(),
+        "step_times": step_times,
+        "detected_steps": detected_steps,
+        "mean_step_time_s": mean_step_time,
+        "cadence_spm": cadence_spm,
+        "mean_knee_angle_deg": float(np.nanmean(valid_angles)) if valid_angles.size else None,
+        "std_knee_angle_deg": float(np.nanstd(valid_angles)) if valid_angles.size else None,
+        "peak_knee_angle_deg": float(np.nanmax(valid_angles)) if valid_angles.size else None,
+    }
+    return results
