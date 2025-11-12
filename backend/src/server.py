@@ -90,10 +90,10 @@ def get_recordings(patient_id: str = Query(...), patient_name: str = Query(None)
             })
 
     if not recordings:
-        raise HTTPException(status_code=404, detail=f"No recordings found for {prefix}")
+        # raise HTTPException(status_code=404, detail=f"No recordings found for {prefix}")
+        return []
 
     return recordings
-
 @app.get("/recordings/{rid}")
 def get_recording(rid: str):
     """Return angle-time data for given recording."""
@@ -106,9 +106,29 @@ def get_recording(rid: str):
         reader = csv.DictReader(f)
         for row in reader:
             try:
+                # Always read time
+                time_val = float(row.get("time_s", 0))
+
+                # Support both old and new column formats
+                angle_fused = (
+                    float(row["angle_printed_fused_deg"])
+                    if row.get("angle_printed_fused_deg") else None
+                )
+                angle_metrics = (
+                    float(row["angle_metrics_deg"])
+                    if row.get("angle_metrics_deg") else None
+                )
+                angle_legacy = (
+                    float(row["angle_deg"])
+                    if row.get("angle_deg") else None
+                )
+
                 data.append({
-                    "time": float(row["time_s"]),
-                    "angle": float(row["angle_deg"]) if row["angle_deg"] else None,
+                    "time": time_val,
+                    # Include all possible fields for flexibility
+                    "angle_fused": angle_fused,
+                    "angle_metrics": angle_metrics,
+                    "angle": angle_legacy,
                 })
             except Exception:
                 continue
@@ -182,7 +202,7 @@ async def analyze_patient(request: Request):
         env.setdefault("AUTO_START", "1")
 
         process = await asyncio.create_subprocess_exec(
-            "python", "src/main.py",
+            "python", "-u", "src/main.py",     # added "-u"
             cwd=ROOT_DIR,
             env=env,
             stdout=asyncio.subprocess.PIPE,

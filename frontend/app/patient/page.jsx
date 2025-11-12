@@ -173,8 +173,14 @@ export default function PatientPage() {
               ))}
             </div>
           ) : (
-            <div className="bg-yellow-50 border border-yellow-200 p-3 rounded text-sm text-gray-700">
-              No recordings available. Click “Generate Recording” to analyze your session.
+            <div className="bg-yellow-50 border border-yellow-200 p-3 rounded text-sm text-gray-700 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+              <span>No recordings available for this patient.</span>
+              <button
+                onClick={() => router.push('/patient/analysis')}
+                className="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded text-sm font-medium"
+              >
+                Generate New Recording →
+              </button>
             </div>
           )}
 

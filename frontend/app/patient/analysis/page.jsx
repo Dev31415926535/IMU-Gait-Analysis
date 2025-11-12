@@ -1,5 +1,5 @@
 'use client'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useAuth } from '@/app/components/AuthProvider'
 import { useRouter } from 'next/navigation'
 import Sidebar from '@/app/components/Sidebar'
@@ -11,19 +11,24 @@ export default function GeneratePage() {
   const { user } = useAuth()
   const router = useRouter()
   const [logs, setLogs] = useState('')
-  const [data, setData] = useState([]) // live plot data
+  const [finalData, setFinalData] = useState([])
   const [analyzing, setAnalyzing] = useState(false)
   const [done, setDone] = useState(false)
-  const abortRef = useRef(null)
+  const logRef = useRef(null)
 
   if (!user) return <div className="p-6">Loading user...</div>
   const patient = { id: user.patientId, name: user.username }
+
+  useEffect(() => {
+    if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
+  }, [logs])
 
   async function handleGenerateRecording() {
     try {
       setAnalyzing(true)
       setLogs('')
-      setData([])
+      setFinalData([])
+      setDone(false)
 
       const res = await fetch(`${API_BASE}/analyze`, {
         method: 'POST',
@@ -37,6 +42,7 @@ export default function GeneratePage() {
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
+      let newFilename = null
 
       while (true) {
         const { done, value } = await reader.read()
@@ -44,23 +50,24 @@ export default function GeneratePage() {
         const chunk = decoder.decode(value, { stream: true })
         buffer += chunk
 
-        // Parse line by line
         const lines = buffer.split('\n')
-        buffer = lines.pop() // incomplete last line stays in buffer
+        buffer = lines.pop()
         for (const line of lines) {
-          if (line.startsWith('STREAM_DATA')) {
-            const parts = line.split(' ')[1]?.split(',')
-            if (parts && parts.length === 2) {
-              const time = parseFloat(parts[0])
-              const angle = parseFloat(parts[1])
-              if (!isNaN(time) && !isNaN(angle)) {
-                setData(prev => [...prev, { time, angle }])
-              }
+          if (line.includes('📁 Saved new recording for')) {
+            const match = line.match(/📁 Saved new recording for .*: (.*_angles\.csv)/)
+            if (match && match[1]) {
+              newFilename = match[1].replace('.csv', '').trim()
+              console.log('📂 Detected saved file:', newFilename)
             }
-          } else {
-            setLogs(prev => prev + line + '\n')
           }
+          setLogs(prev => prev + line + '\n')
         }
+      }
+
+      if (newFilename) {
+        await fetchAndPlotJSON(newFilename)
+      } else {
+        console.warn('⚠️ No saved filename detected in logs.')
       }
 
       setDone(true)
@@ -73,12 +80,27 @@ export default function GeneratePage() {
     }
   }
 
+  async function fetchAndPlotJSON(recordingId) {
+    try {
+      const res = await fetch(`${API_BASE}/recordings/${recordingId}`)
+      if (!res.ok) throw new Error('Failed to fetch recording data')
+      const json = await res.json()
+      if (json?.data?.length) {
+        setFinalData(json.data)
+      } else {
+        console.warn('⚠️ No data in fetched JSON:', json)
+      }
+    } catch (err) {
+      console.error('Error loading saved recording:', err)
+    }
+  }
+
   return (
     <Sidebar>
       <div className="p-6 space-y-6">
         <h2 className="text-2xl font-semibold">Generate New Recording</h2>
         <p className="text-gray-600">
-          This will capture IMU data from your ESP32 in real time and analyze it.
+          This will capture IMU data from your ESP32, analyze it, and plot the recorded results.
         </p>
 
         <button
@@ -91,27 +113,36 @@ export default function GeneratePage() {
           {analyzing ? 'Analyzing...' : 'Start Analysis'}
         </button>
 
-        {/* Live Plot */}
-        {data.length > 0 && (
+        {/* ✅ Single Chart for Final Saved Recording */}
+        {finalData.length > 0 && (
           <div className="bg-white p-4 rounded-lg shadow-md">
-            <h3 className="text-lg font-semibold mb-3">Live Angle Data</h3>
+            <h3 className="text-lg font-semibold mb-3">Angle Metrics vs Time</h3>
             <div className="w-full h-72">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={data}>
+                <LineChart data={finalData}>
                   <CartesianGrid strokeDasharray="3 3" />
                   <XAxis dataKey="time" label={{ value: 'Time (s)', position: 'insideBottomRight' }} />
-                  <YAxis label={{ value: 'Angle (°)', angle: -90, position: 'insideLeft' }} />
+                  <YAxis label={{ value: 'Angle Metrics (°)', angle: -90, position: 'insideLeft' }} />
                   <Tooltip />
-                  <Line type="monotone" dataKey="angle" stroke="#22c55e" strokeWidth={2} dot={false} />
+                  <Line
+                    type="monotone"
+                    dataKey="angle_metrics"
+                    stroke="#3b82f6"
+                    strokeWidth={2}
+                    dot={false}
+                  />
                 </LineChart>
               </ResponsiveContainer>
             </div>
           </div>
         )}
 
-        {/* Live Logs */}
-        <div className="bg-black text-green-400 font-mono p-4 rounded-md max-h-[60vh] overflow-auto whitespace-pre-wrap">
-          {logs ? logs : 'Logs will appear here...'}
+        {/* Logs */}
+        <div
+          ref={logRef}
+          className="bg-black text-green-400 font-mono p-4 rounded-md max-h-[60vh] overflow-auto whitespace-pre-wrap"
+        >
+          {logs || 'Logs will appear here...'}
         </div>
 
         {done && (

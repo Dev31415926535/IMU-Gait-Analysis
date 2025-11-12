@@ -166,6 +166,16 @@ def measurement_phase(
                 imu1_window.pop(0)
                 imu2_window.pop(0)
 
+        # ---- NEW: live angle print for frontend ----
+        try:
+            fused = None
+            if joint_system is not None:
+                fused = joint_system.calculate_angle(pkt['IMU1'], pkt['IMU2'])
+            if fused is not None:
+                print(f"STREAM_DATA {time.time() - start_time:.3f},{fused:.3f}", flush=True)
+        except Exception:
+            pass
+
             # mid-run re-zero (same logic you had previously)
             if rezero_on_stillness and len(imu1_window) >= window_n and (time.time() - last_rezero) > rezero_cooldown_s:
                 try:
