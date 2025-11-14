@@ -94,6 +94,7 @@ def get_recordings(patient_id: str = Query(...), patient_name: str = Query(None)
         return []
 
     return recordings
+
 @app.get("/recordings/{rid}")
 def get_recording(rid: str):
     """Return angle-time data for given recording."""
@@ -141,6 +142,19 @@ def get_recording(rid: str):
     })
 
 # ---------- Patients ----------
+@app.get("/users")
+def get_users():
+    patients = load_json(PATIENT_FILE)
+    # Example: username = slugified patient name
+    return [
+        {
+            "username": slugify(p["name"]),
+            "role": p.get("role", "patient"),
+            "patientId": p["id"],
+        }
+        for p in patients
+    ]
+
 @app.get("/patients")
 def get_patients():
     """List all patients."""

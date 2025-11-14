@@ -1,4 +1,4 @@
-import Sidebar from '@/app/components/Sidebar'
+
 import AngleChart from '@/app/components/AngleChart'
 import { fetchPatient, fetchRecording } from '@/lib/api'
 
@@ -17,7 +17,7 @@ export default async function AdminPatientPage({ params }) {
     const chartData = (recording.times || []).map((t, i) => ({ time_s: t, angle_deg: recording.angles?.[i] ?? null }))
 
     return (
-        <Sidebar>
+
             <div className="space-y-4">
                 <h2 className="text-2xl font-semibold">{patient.name} — Admin View</h2>
 
@@ -32,6 +32,6 @@ export default async function AdminPatientPage({ params }) {
                     </div>
                 </div>
             </div>
-        </Sidebar>
+
     )
 }
