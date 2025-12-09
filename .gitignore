@@ -5,6 +5,10 @@
 # Data directory and CSV files
 data/
 *.csv
+backend/bilateral_data/
+backend/src/bilateral_data/
+bilateral_data/
+*.json  # Or more specific like *gait_report*.json if needed
 
 # Node.js dependencies
 node_modules/

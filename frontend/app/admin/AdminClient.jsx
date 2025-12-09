@@ -102,12 +102,12 @@ export default function AdminClient({ initialPatients }) {
               </div>
               {/* 👇 Add your "View Info" button here */}
               <div className="mt-3">
-                <Link
+                {/* <Link
                   href={`/admin/patient/${p.id}`}
                   className="inline-block bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium px-3 py-1 rounded"
                 >
                   View Patient Info
-                </Link>
+                </Link> */}
               </div>
             </div>
           ))}
